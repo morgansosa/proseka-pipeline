@@ -1,0 +1,17 @@
+#  Install: sudo cp systemd/airflow-proseka.service /etc/systemd/system/ && sudo systemctl enable --now airflow-proseka
+
+[Unit]
+Description=Airflow standalone (proseka)
+After=network-online.target
+
+[Service]
+User=momop
+Group=momop
+Environment=AIRFLOW_HOME=/home/momop/airflow-proseka/airflow
+Environment=PATH=/home/momop/airflow-proseka/.venv/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/home/momop/airflow-proseka
+ExecStart=/home/momop/airflow-proseka/.venv/bin/airflow standalone
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

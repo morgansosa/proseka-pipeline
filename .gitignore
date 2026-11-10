@@ -1,0 +1,10 @@
+proseka.sqlite
+airflow/logs/
+airflow/simple_auth_manager_passwords.json.generated
+airflow/airflow.cfg
+.venv/
+__pycache__/
+*.pyc
+musics.json
+musicDifficulties.json
+airflow/airflow.db*
