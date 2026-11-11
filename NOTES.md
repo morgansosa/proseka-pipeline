@@ -3,7 +3,9 @@ In October 2025, I started playing a rhythm game, Project Sekai ([Official JP Si
 
 Up until this point, I'd been manually updating a Google Sheet that I'd made using data from the [Sekaipedia song database](https://www.sekaipedia.org/wiki/Database:Songs), making new columns, using index-matching to pull in my clear dates and notes, then going through and formatting the cells how I like them. Needless to say this was a huge pain in the ass and I pushed it off as long as possible every time, but eventually caved in the name of data integrity. Now, I could just put everything in a SQL database, but then I'd have to update a SQL database and I don't want to have to do that either. It's 2026, surely there's a way to make a pipe that goes from a list of songs and hook it up to an existing SQL database from my spreadsheet. I'm a data lady, I want to learn modern data lady tools, and what better motivation is there than removing the tedium of a task I already do by hand? 
 
+
 **Enter: Airflow**
+
 I understand that Airflow is probably overkill for what I want, but I may as well learn how to use modern data engineering tools since I do data engineering (among other things) for my job. Instead of using some random synthetic dataset and following a bootcamp template for making a DAG using Airflow, I'm using that same tool to solve a personal problem of mine that I will genuinely use daily. 
 
 What you're about to read (or ask an LLM to read) are my real notes and documentation that I have to write or the information leaves my brain. Please excuse my bad habits and my need to explain things to myself that other people might find trivial.
