@@ -335,3 +335,45 @@ From now on it’s `systemctl status airflow-proseka` and `journalctl -u airflow
 - **skip-if-empty.** I want to add in a skip-if-empty, basically a “no new songs today, pink box, fine.” I also want to set up a guard in case something weird happens with the repo. I want to know ASAP that something bad happened. 
 - **My existing Google Sheet.** I still find the sheet to be very useful as a view. I want it (or something similar) to be updated when Airflow's updates, and i want an easy way to update the database. If the point of this is to make updates easier, I need to make sure that updates are easier :P 
 - **dbt.** A dbt project over `proseka.sqlite`: one staging model that joins `songs` + `charts` + `clears`, one mart (`first_fc_by_level`: for each level, the date I first FC’d a chart at that level), and two tests (every `clears.music_id` exists in `songs`; `clear_type` is one of CLEAR/FC/AP). The point is the vocabulary, not the SQL; the SQL is easy.
+
+# The input layer - a Streamlit app
+
+Since starting this project last week, I've FC'd 13 songs, all of which need to be added to the database. The whole point of doing all of this was that I didn't want to have to update things by SQL, so Claude and I made a Streamlit app. I want a few specific UX things for myself so I actually use this. 
+
+## The reqs
+First, I don't want to have to put in one song at a time. That sounds like a pain and will likely cause the same fail state as before where I just avoided updating my spreadsheet when a new song came out. 
+
+Second, I want to be able to search by difficulty. Since I'm playing on the JP server, it's very possible that I don't know the name of the song, phonetically. If this is meant to make tracking songs easier, than I should remove friction wherever possible. 
+
+Third, I want cascading behavior that implicitly marks a CLEAR when I submit a FC, same thing with marking a FC when I submit an AP. The schema already handles this quite nicely with the `date_is_upper_bound` field. Chart and clear combinations that are submitted implicitly get `date_is_upper_bound = 1`. I originally made this functionality because I started tracking my FCs in March 2026, after I had already been playing for a few months. When I made my tracking sheet I still wanted to mark that I had FC'd those songs, so songs I had FC'd before I started the sheet have a date of "pre 2026-03-04". In the updated schema these are marked with `date_is_upper_bound = 1`. 
+
+Fourth, I want to be able to continue to write notes to myself. Things like "first Master FC!" or "120th Expert FC!", flavor for myself. 
+
+Fifth, at least for right now I want this to be strictly additive. I don't want to accidentally nuke entries. An edit or remove needs to be done intentionally, with friction. 
+
+## First attempt
+Here's what Claude came up with, let's see how it did :P
+![A Streamlit app with 4 search criteria, with a spot to record date, notes, and what kind of clear.](docs/img/streamlit-take-one.png)
+
+Okay so this actually works pretty well, but a couple things I would like:
+
+1. If I click a check box, then search for another song, that check box becomes unchecked. There's no "cart" of songs to get updated. I want a cart. 
+2. Another lowering friction thing, right now I can't search for songs in romaji. I'm honestly fine with that, i think. The point is to get me doing stuff in Japanese, it's okay if I have to change my input method to japanese. This is something that would be important if I make this be something other people could use, though. 
+3. I accidentally submitted something before I entered my note for it, so an "edit note" section would be nice. 
+
+## Second attempt
+Second iteration:
+![A Streamlit app with 4 search criteria, a cart, and a spot to edit notes.](docs/img/streamlit-take-two.png)
+
+Okay cool! Now I can see songs I've marked even when I go to search for something else. In my case, I usually only want a note to apply to one song, though. Or maybe it's better to say that I want the note for one song to be different than the other I'm submitting. Adding in an optional notes box in the pending section, also checking out the edit note feature:
+![A close up of just the cart portion of the app.](docs/img/streamlit-cart.png) 
+![A close up of just the note editing portion of the app.](docs/img/streamlit-edit-note.png) 
+Sick, I think those both work. I even submitted updated note to see if it shows up under the "Fix note" section, and it does!
+![A close up of just the note editing portion of the app, after I updated a note](docs/img/streamlit-edit-note-again)
+
+## How it works
+How it works: ticks go into Streamlit’s `session_state` as a cart keyed by (song, difficulty), so they survive re-searching; the table is just a view of the cart plus what’s already in the database. Submit builds the insert list from the cart, applies the cascade in Python, and writes with `INSERT ... ON CONFLICT DO NOTHING`, so a chart I FC’d in March keeps its March date if I tick it again by accident. Notes attach to the tier I ticked, not the implied rows. The only UPDATE in the app is on `note`, scoped to the batch I just submitted.
+
+Well that was all relatively painless. I'm actually kind of disappointed at how easy that all was? The "hard" part was the schema, the grain, and my requirements. The streamlit side was ~200 lines of code and most of it was hooking up the form to the database.
+
+I was thinking a bit about the repo I got the game data from. The person who updates that repo runs the site [Sekai Viewer](sekai.best), a web viewer of proseka data. Stuff like cards, music, events, stickers, stories, etc. It has some personal tracking with regards to cards, so you as a player could track what cards you have and build teams for different events. I think a natural extension of this is my clears/FC/AP tracker :P I know there are some sites that already do what I'm proposing, but it could be nice to give back to the person/community that I got my data from. Just a thought. 
