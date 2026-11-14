@@ -376,4 +376,89 @@ How it works: ticks go into Streamlit’s `session_state` as a cart keyed by (so
 
 Well that was all relatively painless. I'm actually kind of disappointed at how easy that all was? The "hard" part was the schema, the grain, and my requirements. The streamlit side was ~200 lines of code and most of it was hooking up the form to the database.
 
-I was thinking a bit about the repo I got the game data from. The person who updates that repo runs the site [Sekai Viewer](sekai.best), a web viewer of proseka data. Stuff like cards, music, events, stickers, stories, etc. It has some personal tracking with regards to cards, so you as a player could track what cards you have and build teams for different events. I think a natural extension of this is my clears/FC/AP tracker :P I know there are some sites that already do what I'm proposing, but it could be nice to give back to the person/community that I got my data from. Just a thought. 
+I was thinking a bit about the repo I got the game data from. The person who updates that repo runs the site [Sekai Viewer](sekai.best), a web viewer of proseka data. Stuff like cards, music, events, stickers, stories, etc. It has some personal tracking with regards to cards, so you as a player could track what cards you have and build teams for different events. I think a natural extension of this is my clears/FC/AP tracker :P I know there are some sites that already do what I'm proposing, but it could be nice to give back to the person/community that I got my data from. Just a thought.
+
+# Some updates
+
+Adding some robustness to the DAG:
+1. Retries on every task, so a GitHub hiccup doesn't make the run go red.
+2. The guard in `diff`,  checking for a broken or malformed source
+3. A failure hook, for now just a log file. 
+
+Code below is from Claude, with my trying to understand it below each block
+## 1. Retries
+```python
+from datetime import datetime, timezone, timedelta
+
+@dag(
+    schedule="@daily",
+    start_date=datetime(2026, 11, 1),
+    catchup=False,
+    tags=["proseka"],
+    default_args={"retries": 2, "retry_delay": timedelta(minutes=10)}
+)
+```
+The last line is the retries bit, the rest was already there. 
+Again, explaining this all to myself because this is all pretty new to me, at least as far as syntax goes. 
+`@dag(whatever)` is a decorator, it returns a function that takes whatever function below it as an input. That function has parameters that were set when `@dag(whatever)` was evaluated, in this case information about how often to run the dag. The input for that returned function is whatever is below `@dag`, which in my case is `proseka_songs`.  I know I repeated myself, but this is for me, not for you :P
+
+## 2. Guard in `diff`
+right after `known` is built:
+```python
+        n_fetched, n_known = len(data["songs"]), len(known)
+        if n_fetched == 0:
+            raise ValueError("fetch returned zero songs; refusing to continue")
+        if n_fetched < n_known:
+            raise ValueError(f"fetched {n_fetched} songs but DB already has {n_known}; source looks wrong")
+```
+These two checks are straightforward, it's just checking if the number of fetched songs (`len(data["songs"])`) is zero or less than the number of known songs, songs that already exist in the database, and throwing errors with appropriate error messages. In this case, `ValueError` is thrown for both cases because the data is the correct type (`int`), but the values themselves are the problem.  
+## 3. Failure hook
+near the top:
+```python
+def on_fail(context):
+    ti = context["task_instance"]
+    with open("/home/momop/airflow-proseka/failures.log", "a") as f:
+        f.write(f"{datetime.now(timezone.utc).isoformat()} {ti.dag_id}.{ti.task_id} "
+                f"try {ti.try_number}: {context.get('exception')}\n")
+```
+
+also updating the `default_args` part in `@dag`:
+```python
+default_args={"retries": 2, "retry_delay": timedelta(minutes=10), "on_failure_callback": on_fail}
+```
+
+Okay this one I mostly worked out myself before consulting Claude. The function `on_fail` is being used as a reporting mechanism for Airflow if a run fails. In `default_args`, the key: value pair `"on_failure_callback": on_fail` is telling Airflow (through the use of `"on_failure_callback"`) what to do if there's an error. If there's an error, Airflow then calls that function and passes it one argument, `context`, which is a dict of everything it knows about that run. `task_instance` (dag id, task id, try number, state), `dag_run`, `exception` (the actual error object), `execution_date`, etc. My `on_fail` function picks things out of that and writes them to a file, that's it. 
+
+I feel like I've unlocked a super power by understanding that you can pass functions around. 
+
+Actually, updating the last bit to also log retry failures:
+```python
+  default_args={
+      "retries": 2,
+      "retry_delay": timedelta(minutes=10),
+      "on_retry_callback": on_fail,
+      "on_failure_callback": on_fail,
+  }
+```
+
+## Testing the fail hook
+Changed `BASE_URL` in `pproseka_songs.py` to not a URL to check that things worked, or rather didn't work in the way I expected:
+![Airflow UI showing fetch up for retry](docs/img/dag-retry.png)
+Hooray! it successfully failed and said it's up for retry. I had a typo in the path for my error log, so nothing showed up. It was a matter of a `_` instead of a `-`. bah. fixed, reran the retry test but with 30 second delays between retries:
+![Airflow UI showing a failed fetch with two retries](docs/img/dag-successfully-failed.png)
+Looking at `failure.log`:
+```bash
+(.venv) momop@Morgan:~/airflow-proseka$ cat failures.log
+2026-11-14T21:34:51.527218+00:00  proseka_songs.fetch try 1: unknown url type: 'testurlmusics.json'
+2026-11-14T21:35:22.138629+00:00  proseka_songs.fetch try 2: unknown url type: 'testurlmusics.json'
+2026-11-14T21:35:52.731359+00:00  proseka_songs.fetch try 3: unknown url type: 'testurlmusics.json'
+```
+Great, this all makes sense. Inside `fetch()`, there's this function:
+```python
+def get(name):
+	with urllib.request.urlopen(BASE + name) as r:
+		return json.load(r)
+```
+Because I put `BASE` as something that doesn't even look like a URL (`BASE = "testurl"`), `urllib` doesn't recognize that it's a URL, so it returns the `unknown url type` error. Also, because I made `BASE` without an ending `/` slash, `BASE + name` does exactly what it says and makes `testurlmusics.json`. Again, these notes are mostly for me, sorry for stating the obvious. 
+
+TLDR of this session is: I broke the source on purpose, watched it fail three times, and found the record in a file I wrote. The pipeline now tells me when it’s broken instead of going quietly green. 

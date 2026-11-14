@@ -1,6 +1,7 @@
 from airflow.sdk import dag, task
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json, sqlite3, urllib.request
+
 
 BASE = "https://raw.githubusercontent.com/Sekai-World/sekai-master-db-diff/main/"
 DB_PATH = "/home/momop/airflow-proseka/proseka.sqlite"
@@ -9,7 +10,23 @@ SERVER = "jp"
 def ms_to_date(ms):
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).date().isoformat() if ms else None
 
-@dag(schedule="@daily", start_date=datetime(2026, 11, 1), catchup=False, tags=["proseka"])
+def on_fail(context):
+    ti = context["task_instance"]
+    with open("/home/momop/airflow-proseka/failures.log", "a") as f:
+        f.write(f"{datetime.now(timezone.utc).isoformat()}  {ti.dag_id}.{ti.task_id} "
+                f"try {ti.try_number}: {context.get('exception')}\n") 
+
+@dag(
+        schedule="@daily", 
+        start_date=datetime(2026, 11, 1), 
+        catchup=False, 
+        tags=["proseka"], 
+        default_args={
+            "retries": 2, 
+            "retry_delay": timedelta(minutes=10), 
+            "on_retry_callback": on_fail, 
+            "on_failure_callback": on_fail}
+)
 def proseka_songs():
 
     @task
@@ -34,6 +51,11 @@ def proseka_songs():
         con = sqlite3.connect(DB_PATH)
         known = {r[0] for r in con.execute("SELECT music_id FROM songs WHERE server=?", (SERVER,))}
         con.close()
+        n_fetched, n_known = len(data["songs"]), len(known)
+        if n_fetched == 0:
+            raise ValueError("fetch returned zero songs; refusing to continue")
+        if n_fetched < n_known:
+            raise ValueError(f"fetched {n_fetched} songs but DB already has {n_known}; source looks wrong")
         new_ids = sorted(s["music_id"] for s in data["songs"] if s["music_id"] not in known)
         return {"new_ids": new_ids, **data}
 

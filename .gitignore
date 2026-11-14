@@ -8,3 +8,4 @@ __pycache__/
 musics.json
 musicDifficulties.json
 airflow/airflow.db*
+failures.log
