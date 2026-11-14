@@ -90,7 +90,6 @@ Four tables. `songs` and `charts` come from the master data; `clears` is mine; `
 ## Next
 
 - Add the EN server (`sekai-master-db-en-diff`); the schema already has a `server` column
-- Sanity checks in `diff`: fail the run if the fetch comes back empty or smaller than the database
 - Push the current state back to the Google Sheet so the sheet becomes a view
 - dbt models over the same database (staging model, `first_fc_by_level` mart, tests)
 - Romaji search in the app, only if it ever becomes multi-user
