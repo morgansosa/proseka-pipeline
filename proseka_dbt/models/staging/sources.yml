@@ -1,0 +1,9 @@
+version: 2
+sources:
+  - name: proseka
+    database: src
+    schema: main
+    tables:
+      - name: songs
+      - name: charts
+      - name: clears

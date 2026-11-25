@@ -9,3 +9,12 @@ musics.json
 musicDifficulties.json
 airflow/airflow.db*
 failures.log
+
+# dbt
+.venv-dbt/
+*.duckdb
+*.duckdb.wal
+proseka_dbt/target/
+proseka_dbt/logs/
+proseka_dbt/dbt_packages/
+proseka_dbt/.user.yml
