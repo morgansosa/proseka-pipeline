@@ -462,3 +462,408 @@ def get(name):
 Because I put `BASE` as something that doesn't even look like a URL (`BASE = "testurl"`), `urllib` doesn't recognize that it's a URL, so it returns the `unknown url type` error. Also, because I made `BASE` without an ending `/` slash, `BASE + name` does exactly what it says and makes `testurlmusics.json`. Again, these notes are mostly for me, sorry for stating the obvious. 
 
 TLDR of this session is: I broke the source on purpose, watched it fail three times, and found the record in a file I wrote. The pipeline now tells me when it’s broken instead of going quietly green. 
+
+# dbt
+I'm tired of looking at job listings that say "dbt" and not being able to apply because I don't have dbt, so today we're going to install dbt and maybe make something turn green. 
+
+## Installing dbt
+```bash
+cd ~/airflow-proseka
+python3 -m venv .venv-dbt && source .venv-dbt/bin/activate
+pip install dbt-duckdb
+dbt init proseka_dbt        # pick duckdb when it asks; accept defaults
+```
+
+updating the profile (`~/.dbt/profiles.yml`):
+```yml
+proseka_dbt:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: /home/momop/airflow-proseka/proseka_dbt/proseka.duckdb
+      attach:
+        - path: /home/momop/airflow-proseka/proseka.sqlite
+          type: sqlite
+          alias: src
+```
+
+Then `dbt debug`.
+### The first error
+I ran `dbt debug` from the wrong folder (: 
+```bash
+22:33:54 1 check failed:  
+22:33:54 Project loading failed for the following reason:  
+project path </home/momop/airflow-proseka/dbt_project.yml> not found
+
+(.venv-dbt) momop@Morgan:~/airflow-proseka$ ls proseka_dbt/  
+README.md analyses dbt_project.yml dev.duckdb macros models seeds snapshots tests
+```
+I ran `dbt debug` in `~/airflow-proseka`, not `~/airflow-proseka/proseka_dbt`. Easy enough fix. After moving to the right folder, got the all clear:
+```bash
+22:35:28 All checks passed!
+```
+
+## Setting up the source and model
+First, get rid of all of the examples because I don't want them. `rm -r models/example/`, then `mkdir models/staging`.
+source `models/staging/sources.yml`:
+```yml
+version: 2
+sources:
+  - name: proseka
+    database: src
+    schema: main
+    tables:
+      - name: songs
+      - name: charts
+      - name: clears
+```
+
+model `models/staging/stg_charts.sql`:
+```sql
+select
+    c.music_id,
+    c.server,
+    s.title,
+    s.pronunciation,
+    c.difficulty,
+    c.level,
+    c.notes as note_count,
+    s.published_at
+from {{ source('proseka', 'charts') }} c
+join {{ source('proseka', 'songs') }} s
+  on s.music_id = c.music_id and s.server = c.server
+```
+Just a simple join showing songs, difficulties, number of notes, and when the song was released in game.
+
+And of course because nothing ever runs perfectly the first time, after `dbt run`:
+```bash
+22:38:12 [ERROR]: in model stg_charts (models/staging/stg_charts.sql)  
+22:38:12 Runtime Error in model stg_charts (models/staging/stg_charts.sql)  
+Catalog Error: Table with name charts does not exist!  
+Did you mean "information_schema.character_sets"?
+```
+\>:(
+
+### Hunting down the second error
+Checking which databases dbt thinks exist, I'm looking for src:
+```bash
+dbt show --inline "select database_name from duckdb_databases()"
+
+<truncated output>
+Previewing inline node:  
+| database_name |  
+| ------------- |  
+| src           |  
+| proseka       |  
+| system        |  
+| temp          |
+```
+I see src :| So the profile should be fine. Starting from the top to make sure I didn't miss something:
+
+`proseka_dbt/dbt_project.yml` - `dbt init` made this, I just need to remove the `example:` line near the bottom because I got rid of that folder, and fix indentation obv. Bottom lines should read:
+```yml
+models:
+  proseka_dbt:
+    +materialized: view
+```
+
+Double checking `proseka_dbt/models/staging/sources.yml`:
+```yml
+version: 2
+
+sources:
+  - name: proseka
+    database: src
+    schema: main
+    tables:
+      - name: songs
+      - name: charts
+      - name: clears
+```
+Okay that's fine. 
+
+Compiling:
+```bash
+dbt compile --select stg_charts
+
+<output>
+23:30:35  Running with dbt=1.12.7
+23:30:35  Registered adapter: duckdb=1.11.1
+23:30:35  Found 1 model, 3 sources, 511 macros
+23:30:35
+23:30:35  Concurrency: 1 threads (target='dev')
+23:30:35
+Compiled node 'stg_charts' is:
+select
+    c.music_id,
+    c.server,
+    s.title,
+    s.pronunciation,
+    c.difficulty,
+    c.level,
+    c.notes as note_count,
+    s.published_at
+from "src"."main"."charts" c
+join "src"."main"."songs" s
+  on s.music_id = c.music_id and s.server = c.server
+```
+okay, that also looks fine. `dbt run` again:
+```bash
+22:47:58 Running with dbt=1.12.7  
+22:47:58 Registered adapter: duckdb=1.11.1  
+22:47:58 Found 1 model, 3 sources, 511 macros  
+22:47:58  
+22:47:58 Concurrency: 1 threads (target='dev')  
+22:47:58  
+22:47:59 1 of 1 START sql view model main.stg_charts .................................... [RUN]  
+22:47:59 1 of 1 ERROR creating sql view model main.stg_charts ........................... [ERROR in 0.04s]  
+22:47:59  
+22:47:59 Finished running 1 view model in 0 hours 0 minutes and 0.15 seconds (0.15s).  
+22:47:59  
+22:47:59 Completed with 1 error, 0 partial successes, and 0 warnings:  
+22:47:59  
+22:47:59 [ERROR]: in model stg_charts (models/staging/stg_charts.sql)  
+22:47:59 Runtime Error in model stg_charts (models/staging/stg_charts.sql)  
+Catalog Error: Table with name charts does not exist!  
+Did you mean "information_schema.character_sets"?  
+22:47:59  
+22:47:59 compiled code at target/compiled/proseka_dbt/models/staging/stg_charts.sql  
+22:47:59  
+22:47:59 Done. PASS=0 WARN=0 ERROR=1 SKIP=0 NO-OP=0 REUSED=0 TOTAL=1
+```
+):<
+
+Let's see if I can look at whatever it is that duckdb attached:
+```bash
+dbt show --inline "select count(*) from src.main.charts"
+22:49:15  Running with dbt=1.12.7
+22:49:15  Registered adapter: duckdb=1.11.1
+22:49:16  Found 1 model, 1 sql operation, 3 sources, 511 macros
+22:49:16
+22:49:16  Concurrency: 1 threads (target='dev')
+22:49:16
+22:49:16  [ERROR]: Encountered an error:
+Runtime Error
+  Runtime Error in sql_operation inline_query (from remote system.sql)
+    Catalog Error: Table with name charts does not exist!
+    Did you mean "information_schema.character_sets"?
+```
+Same error, let's check the path in the profile, since I didn't check that before:
+```
+- path: /home/momop/airflow-proseka/proseka.duckdb
+```
+(: 
+ah. I see. because I typed this instead of copy-paste, I typed it wrong. great. changing it to `proseka.sqlite`, then `dbt run`:
+```bash
+~/airflow-proseka/proseka_dbt$ dbt run  
+22:52:21 Running with dbt=1.12.7  
+22:52:21 Registered adapter: duckdb=1.11.1  
+22:52:21 Unable to do partial parsing because profile has changed  
+22:52:22 Found 1 model, 3 sources, 511 macros  
+22:52:22  
+22:52:22 Concurrency: 1 threads (target='dev')  
+22:52:22  
+22:52:22 1 of 1 START sql view model main.stg_charts .................................... [RUN]  
+22:52:22 1 of 1 OK created sql view model main.stg_charts ............................... [OK in 0.07s]  
+22:52:22  
+22:52:22 Finished running 1 view model in 0 hours 0 minutes and 0.23 seconds (0.23s).  
+22:52:22  
+22:52:22 Completed successfully  
+22:52:22  
+22:52:22 Done. PASS=1 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL
+```
+:D
+green! 
+
+okay, next things for later (tomorrow, next week):
+`stg_clears.sql`, then `first_fc_by_level.sql` using `{{ ref('stg_clears') }}`, then a `schema.yml` with two tests and `dbt test`. That’s the whole block, and then “dbt” goes on the resume with a link under it too.
+
+## Coming back to this after a bit
+
+Had kind of a crazy week, which included taking my partner to the ER. Coming back after a few days. 
+
+Making sure everything is still working fine:
+```bash
+cd ~/airflow-proseka
+source .venv-dbt/bin/activate
+cd proseka_dbt
+dbt run
+```
+```bash
+19:39:00  Running with dbt=1.12.7
+19:39:00  Registered adapter: duckdb=1.11.1
+19:39:01  Found 1 model, 3 sources, 511 macros
+19:39:01
+19:39:01  Concurrency: 1 threads (target='dev')
+19:39:01
+19:39:01  1 of 1 START sql view model main.stg_charts .................................... [RUN]
+19:39:01  1 of 1 OK created sql view model main.stg_charts ............................... [OK in 0.08s]
+19:39:01
+19:39:01  Finished running 1 view model in 0 hours 0 minutes and 0.40 seconds (0.40s).
+19:39:01
+19:39:01  Completed successfully
+19:39:01
+19:39:01  Done. PASS=1 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL=1
+```
+
+Cool, nothing magically broke. 
+
+Previously, I made a model called `stg_charts`, which is a list of all the charts, meaning all of the information about every song and difficulty combination (easy, medium, hard, expert, master, append). Things like song name, pronunciation, the number of notes in each song, what difficulty level each difficulty is, etc. That's all info that I got from the data source on github. 
+
+Next, I'm going to make a new model that has to do with my clears,. Last week I made a quick histogram in Excel using my old spreadsheet to see how many songs I had FC'd by month; I want to try to remake a similar plot using data here, plus be able to see where I first FC'd a given difficulty.
+
+This new model, `stg_clears`, is information about when I cleared a song and any of my notes. I often left myself notes like "first 26 FC", "first clear", "100th Expert FC", stuff like that, and I might want to query that at some point. 
+```sql
+select
+    music_id,
+    server,
+    difficulty,
+    clear_type,
+    cast(date as date) as clear_date,
+    date_is_upper_bound = 1 as is_upper_bound,
+    note as clear_note
+from {{ source('proseka', 'clears') }}
+```
+A few clean-up notes:
+- `clear_date`: SQLite stores my dates as text, but if I'm interested in looking at datetime information, I should cast those as actual dates.
+- `is_upper_bound`: My database currently has this as a binary number flag, this is just changing it to `true`/`false`. 
+- `clear_note`: This keeps almost tripping me up, to the point I should probably rename the field in the clears tables (: In the clears table, `note` is not the number of notes in the chart, it's notes that I added for myself. Things like "100th FC". So, renaming it to `clear_note`.
+Saving and running `dbt run` again:
+```bash
+20:15:14  Running with dbt=1.12.7
+20:15:14  Registered adapter: duckdb=1.11.1
+20:15:15  Found 2 models, 3 sources, 511 macros
+20:15:15
+20:15:15  Concurrency: 1 threads (target='dev')
+20:15:15
+20:15:15  1 of 2 START sql view model main.stg_charts .................................... [RUN]
+20:15:15  1 of 2 OK created sql view model main.stg_charts ............................... [OK in 0.07s]
+20:15:15  2 of 2 START sql view model main.stg_clears .................................... [RUN]
+20:15:15  2 of 2 OK created sql view model main.stg_clears ............................... [OK in 0.02s]
+20:15:15
+20:15:15  Finished running 2 view models in 0 hours 0 minutes and 0.23 seconds (0.23s).
+20:15:15
+20:15:15  Completed successfully
+20:15:15
+20:15:15  Done. PASS=2 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL=2
+```
+Great! :D I have 2 of 2 OK. 
+
+Next, the mart. A mart is the query/table that I make to answer the question I have, which is "when did I first FC each difficulty, and how many FCs do I have at that difficulty". Theses are essentially the same as the saved queries that I had when I worked at a mental health org in Seattle, but all of our data and source tables were stored in our EHR, not something like dbt. 
+
+Just so I can make the connection between things in dbt and my past experiences, I'm going to kind of spell this all out for myself. All of the raw data lives in my source sqlite database, `proseka.sqlite`. Airflow updates that whenever a new song drops, and I update my clears using the Streamlit app. Each of the queries I've written are views that do some nice clean-up but I don't actually need them to answer my question. When I worked at the mental health org, I just used CTEs and subqueries. That worked fine for us because there were only two of us writing and running queries, but at a larger org, using something like dbt would be really helpful. Models in dbt are just CTEs that live in files instead of in a query. 
+
+Anyways, back on task. Answering my question, `models/marts/first_fc_by_level.sql`
+
+```sql
+select
+    ch.level,
+    min(cl.clear_date) as first_fc_date,
+    count(*) as fc_count
+from {{ ref('stg_clears') }} as cl
+join {{ ref('stg_charts') }} as ch
+    on  cl.music_id = ch.music_id
+    and cl.server = ch.server
+    and cl.difficulty = ch.difficulty
+where cl.clear_type = 'FC'
+group by ch.level
+order by ch.level
+```
+then `dbt run`:
+```bash
+21:38:19  Running with dbt=1.12.7
+21:38:20  Registered adapter: duckdb=1.11.1
+21:38:20  Found 3 models, 3 sources, 511 macros
+21:38:20
+21:38:20  Concurrency: 1 threads (target='dev')
+21:38:20
+21:38:20  1 of 3 START sql view model main.stg_charts .................................... [RUN]
+21:38:20  1 of 3 OK created sql view model main.stg_charts ............................... [OK in 0.07s]
+21:38:20  2 of 3 START sql view model main.stg_clears .................................... [RUN]
+21:38:20  2 of 3 OK created sql view model main.stg_clears ............................... [OK in 0.02s]
+21:38:21  3 of 3 START sql view model main.first_fc_by_level ............................. [RUN]
+21:38:21  3 of 3 OK created sql view model main.first_fc_by_level ........................ [OK in 0.02s]
+21:38:21
+21:38:21  Finished running 3 view models in 0 hours 0 minutes and 0.43 seconds (0.43s).
+21:38:21
+21:38:21  Completed successfully
+21:38:21
+21:38:21  Done. PASS=3 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL=3
+```
+Okay cool! finally, let's see what the data says:
+
+```bash 
+$ dbt show --select first_fc_by_level --limit 30
+21:46:49  Running with dbt=1.12.7
+21:46:50  Registered adapter: duckdb=1.11.1
+21:46:50  Found 3 models, 3 sources, 511 macros
+21:46:50
+21:46:50  Concurrency: 1 threads (target='dev')
+21:46:50
+Previewing node 'first_fc_by_level':
+| level | first_fc_date | fc_count |
+| ----- | ------------- | -------- |
+|    17 |    2026-11-05 |        1 |
+|    18 |    2026-11-05 |        1 |
+|    20 |    2026-11-06 |        2 |
+|    21 |    2026-03-04 |        8 |
+|    22 |    2026-03-04 |       30 |
+|    23 |    2026-03-04 |       26 |
+|    24 |    2026-03-04 |       33 |
+|    25 |    2026-03-04 |       16 |
+|    26 |    2026-03-04 |        6 |
+|    27 |    2026-03-10 |        2 |
+```
+
+A couple things. Looking back at my original spreadsheet (and my memory), I haven't FC'd a 27 yet, those are regular clears. Gotta update the source data for that. Second, I definitely FC'd 17s and 18 before November 2026, I just didn't bother to track them because I was originally mainly focused on tracking Expert and higher difficulties. 
+
+Anyways. Adding in a test, at `models/schema.yml`:
+```yml
+version: 2
+
+models:
+  - name: stg_clears
+    columns:
+      - name: clear_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['CLEAR', 'FC', 'AP']
+
+  - name: first_fc_by_level
+    columns:
+      - name: level
+        data_tests:
+          - unique
+          - not_null
+```
+This runs three tests: 
+- `accepted_values`: every `clear_type`, has one of my three tiers. If there were a typo, this would fail. 
+- `unique` and `not_null`: each level in `first_fc_by_level` appears exactly once and is never null. If a join duplicated a row, this catches it. 
+
+Now to test:
+```bash
+$ dbt test
+22:06:28  Running with dbt=1.12.7
+22:06:28  Registered adapter: duckdb=1.11.1
+22:06:29  Found 3 models, 3 data tests, 3 sources, 511 macros
+22:06:29
+22:06:29  Concurrency: 1 threads (target='dev')
+22:06:29
+22:06:29  1 of 3 START test accepted_values_stg_clears_clear_type__CLEAR__FC__AP ......... [RUN]
+22:06:29  1 of 3 PASS accepted_values_stg_clears_clear_type__CLEAR__FC__AP ............... [PASS in 0.04s]
+22:06:29  2 of 3 START test not_null_first_fc_by_level_level ............................. [RUN]
+22:06:29  2 of 3 PASS not_null_first_fc_by_level_level ................................... [PASS in 0.02s]
+22:06:29  3 of 3 START test unique_first_fc_by_level_level ............................... [RUN]
+22:06:29  3 of 3 PASS unique_first_fc_by_level_level ..................................... [PASS in 0.02s]
+22:06:29
+22:06:29  Finished running 3 data tests in 0 hours 0 minutes and 0.19 seconds (0.19s).
+22:06:29
+22:06:29  Completed successfully
+22:06:29
+22:06:29  Done. PASS=3 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL=3
+```
+:D yay
+
+I can officially say I've made a model in dbt. 
